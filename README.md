@@ -2,11 +2,14 @@
 
 Python package for the raster language protocol of the Brother QL series label printers
 
+## IN MAINTENANCE MODE
+
+This repo is provided as is. It works for the printers listed below with the latest printers, I checked all of them personally.  
+I do not inteded to add or change anything unless something breaks.
 
 ## FORK NOTICE
 
-This is a fork of https://github.com/pklaus/brother_ql by [Philipp Klaus](https://github.com/pklaus) to enable faster updates.
-Check out https://github.com/inventree/inventree to see what I forked it for.
+This is a fork of https://github.com/pklaus/brother_ql by [Philipp Klaus](https://github.com/pklaus).
 
 ## Verified models
 ### Verified devices
