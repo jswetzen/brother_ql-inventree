@@ -4,7 +4,7 @@ Python package for the raster language protocol of the Brother QL series label p
 
 ## IN MAINTENANCE MODE
 
-This repo is provided as is. It works for the printers listed below with the latest printers, I checked all of them personally.  
+This repo is provided as is. It works for the printers listed below with the latest version, I checked all of them personally.  
 I do not inteded to add or change anything unless something breaks.
 
 ## FORK NOTICE
