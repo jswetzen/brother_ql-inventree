@@ -65,8 +65,39 @@ def send(instructions, printer_identifier=None, backend_identifier=None, blockin
 
     if not blocking:
         return status
+
     if selected_backend == 'network':
-        """ No need to wait for completion. The network backend doesn't support readback. """
+        # Poll status via SNMP (separate channel from TCP/9100)
+        raw = printer.get_status_snmp() if hasattr(printer, 'get_status_snmp') else None
+        if raw:
+            start_wait = time.time()
+            while time.time() - start_wait < 15:
+                raw = printer.get_status_snmp()
+                if not raw:
+                    time.sleep(0.5)
+                    continue
+                try:
+                    result = interpret_response(raw)
+                except ValueError:
+                    time.sleep(0.5)
+                    continue
+                status['printer_state'] = result
+                logger.debug('SNMP status: %s', result)
+                if result['errors']:
+                    logger.error('Errors occured: %s', result['errors'])
+                    status['outcome'] = 'error'
+                    break
+                if result['status_type'] == 'Printing completed':
+                    status['did_print'] = True
+                    status['outcome'] = 'printed'
+                if result['status_type'] == 'Phase change' and result['phase_type'] == 'Waiting to receive':
+                    status['ready_for_next_job'] = True
+                if status['did_print'] and status['ready_for_next_job']:
+                    break
+                time.sleep(0.2)
+        else:
+            # puresnmp not available or query failed, degrade gracefully
+            logger.info("Network backend: no SNMP status available, returning 'sent'.")
         return status
 
     while time.time() - start < 10:
@@ -125,13 +156,28 @@ def get_printer(
             logger.info("No backend stated. Selecting the default linux_kernel backend.")
             selected_backend = "linux_kernel"
     if selected_backend == "network":
-        # Not implemented due to lack of an available test device
-        raise NotImplementedError
+        logger.info("Network backend: status queries use SNMP, not the TCP channel.")
+        # Allow instantiation — caller can use get_status_snmp() on the returned object
 
     be = backend_factory(selected_backend)
     BrotherQLBackend = be["backend_class"]
     printer = BrotherQLBackend(printer_identifier)
     return printer
+
+def get_network_status(printer_identifier):
+    """
+    Query SNMP status for a network printer by identifier (tcp://host[:port]).
+
+    Returns parsed status dict, or None if puresnmp is unavailable or query fails.
+    Useful for startup checks without needing to open a TCP/9100 connection first.
+    """
+    host = printer_identifier.replace('tcp://', '').split(':')[0]
+    from brother_ql.backends.network import get_snmp_status
+    raw = get_snmp_status(host)
+    if raw is None:
+        return None
+    return interpret_response(raw)
+
 
 def get_status(
     printer,
@@ -147,6 +193,7 @@ def get_status(
     """
 
     if not receive_only:
+        printer.write(b"\x1b\x40")      # "ESC @" Initialize
         printer.write(b"\x1b\x69\x53")  # "ESC i S" Status information request
     data = printer.read()
     try:

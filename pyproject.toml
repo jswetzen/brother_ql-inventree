@@ -46,6 +46,9 @@ classifiers = [
     "Topic :: System :: Hardware :: Hardware Drivers",
 ]
 
+[project.optional-dependencies]
+network-status = ["puresnmp", "zeroconf"]
+
 [project.scripts]
 brother_ql = "brother_ql.cli:cli"
 brother_ql_analyse = "brother_ql.brother_ql_analyse:main"

@@ -5,35 +5,107 @@ Backend to support Brother QL-series printers via network.
 Works cross-platform.
 """
 
-import socket, time, select
+import asyncio
+import logging
+import socket
+import time
+import select
 
 from .generic import BrotherQLBackendGeneric
 
+logger = logging.getLogger(__name__)
+
+STATUS_OID = '1.3.6.1.4.1.2435.3.3.9.1.6.1.0'
+
+
+def get_snmp_status(host, community='public', timeout=2.0):
+    """
+    Query printer status via SNMP (UDP/161).
+    Returns raw 32-byte status bytes, or None if puresnmp is not installed
+    or the query fails.
+    """
+    try:
+        import puresnmp
+    except ImportError:
+        logger.warning(
+            "puresnmp not installed; network status unavailable. "
+            "Install with: pip install brother_ql-inventree[network-status]"
+        )
+        return None
+    try:
+        async def _get():
+            client = puresnmp.Client(host, puresnmp.V2C(community))
+            wrapper = puresnmp.PyWrapper(client)
+            return await asyncio.wait_for(wrapper.get(STATUS_OID), timeout=timeout)
+        raw = asyncio.run(_get())
+        return bytes(raw)
+    except Exception as e:
+        logger.warning("SNMP status query failed for %s: %s", host, e)
+        return None
+
+
 def list_available_devices():
     """
-    List all available devices for the network backend
+    Discover Brother QL printers on the local network via mDNS/DNS-SD.
 
-    returns: devices: a list of dictionaries with the keys 'identifier' and 'instance': \
-        [ {'identifier': 'tcp://hostname[:port]', 'instance': None}, ] \
-        Instance is set to None because we don't want to connect to the device here yet.
+    Browses _pdl-datastream._tcp (port 9100 AppSocket/JetDirect),
+    which Brother QL network models (QL-810W, QL-820NWB, etc.) advertise
+    via Bonjour/AirPrint.
+
+    Returns list of {'identifier': 'tcp://hostname:9100', 'instance': None}.
+    Requires: pip install brother_ql-inventree[network-status]
     """
+    try:
+        from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
+    except ImportError:
+        logger.warning(
+            "zeroconf not installed; network discovery unavailable. "
+            "Install with: pip install brother_ql-inventree[network-status]"
+        )
+        return []
 
-    # We need some snmp request sent to 255.255.255.255 here
-    raise NotImplementedError()
-    return [{'identifier': 'tcp://' + path, 'instance': None} for path in paths]
+    devices = []
+
+    def on_service_state_change(zeroconf, service_type, name, state_change, **kwargs):
+        if state_change is ServiceStateChange.Added:
+            info = zeroconf.get_service_info(service_type, name)
+            if info is None:
+                return
+            # Filter to likely Brother QL printers by name
+            name_lower = name.lower()
+            if 'brother' not in name_lower and 'ql' not in name_lower:
+                return
+            # Build tcp:// identifier from address and port
+            addresses = info.parsed_addresses()
+            if not addresses:
+                return
+            host = addresses[0]
+            port = info.port or 9100
+            identifier = f'tcp://{host}:{port}'
+            devices.append({'identifier': identifier, 'instance': None})
+            logger.info("Discovered network printer: %s (%s)", name, identifier)
+
+    zc = Zeroconf()
+    browser = ServiceBrowser(zc, '_pdl-datastream._tcp.local.', handlers=[on_service_state_change])
+    # Browse for ~2 seconds to collect responses
+    time.sleep(2.0)
+    zc.close()
+
+    return devices
+
 
 class BrotherQLBackendNetwork(BrotherQLBackendGeneric):
     """
-    BrotherQL backend using the Linux Kernel USB Printer Device Handles
+    BrotherQL backend using TCP network connection (port 9100).
+    Status readback uses SNMP (UDP/161) via get_status_snmp().
     """
 
     def __init__(self, device_specifier):
         """
-        device_specifier: string or os.open(): identifier in the \
-            format file:///dev/usb/lp0 or os.open() raw device handle.
+        device_specifier: string in the format tcp://host[:port] or host[:port].
         """
 
-        self.read_timeout = 0.01
+        self.read_timeout = 2.0
         # strategy : try_twice, select or socket_timeout
         self.strategy = 'socket_timeout'
         if isinstance(device_specifier, str):
@@ -61,6 +133,11 @@ class BrotherQLBackendNetwork(BrotherQLBackendGeneric):
             self.dev = device_specifier
         else:
             raise NotImplementedError('Currently the printer can be specified either via an appropriate string or via an os.open() handle.')
+
+    def get_status_snmp(self):
+        """Query printer status via SNMP using the connected host."""
+        host = self.s.getpeername()[0]
+        return get_snmp_status(host)
 
     def _write(self, data):
         self.s.settimeout(10)
